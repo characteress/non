@@ -7,4 +7,3 @@ make O=out clean
 make O=out mrproper
 make O=out z2_plus_defconfig
 make O=out -j$(nproc --all)
-gdrive upload out/arch/arm64/boot/Image.gz-dtb
