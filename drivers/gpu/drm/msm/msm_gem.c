@@ -193,10 +193,6 @@ static void put_pages(struct drm_gem_object *obj)
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
 	if (msm_obj->pages) {
-<<<<<<< HEAD
-		if (use_pages(obj))
-			msm_drm_free_buf(obj);
-=======
 		if (msm_obj->sgt) {
 			/* For non-cached buffers, ensure the new
 			 * pages are clean because display controller,
@@ -213,7 +209,6 @@ static void put_pages(struct drm_gem_object *obj)
 
 		if (iommu_present(&platform_bus_type))
 			drm_gem_put_pages(obj, msm_obj->pages, true, false);
->>>>>>> v3.18.114
 		else {
 			drm_mm_remove_node(msm_obj->vram_node);
 			drm_free_large(msm_obj->pages);
