@@ -1,7 +1,7 @@
-export CROSS_COMPILE="/home/cyproto21/kernel/linaro-7.2/bin/aarch64-linux-gnu-"
+export CROSS_COMPILE="/home/cyproto21/kernel/linaro-7.3/bin/aarch64-linux-gnu-"
 export ARCH=arm64 && export SUBARCH=arm64
-export KBUILD_BUILD_HOST="-_-"
-export KBUILD_BUILD_USER="Yash"
+export KBUILD_BUILD_HOST="123"
+export KBUILD_BUILD_USER="cyproto"
 mkdir -p out
 make O=out clean
 make O=out mrproper
