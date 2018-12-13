@@ -8434,6 +8434,171 @@ static void rerun_hvdcp_det_if_necessary(struct smbchg_chip *chip)
 	}
 }
 
+/*
+ * cclogic callback, notify cclogic event status: detached or attached
+ */
+#ifdef SUPPORT_CCLOGIC_EVENT_TYPE
+static int cclogic_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
+{
+	struct smbchg_chip *chip = container_of(self, struct smbchg_chip, cclogic_notif);
+
+	if (event == 1) { //usb detached
+		chip->cclogic_attached = USB_DETACHED;
+#ifdef SUPPORT_FORCE_RERUN_APSD
+		chip->apsd_rerun_enable = 0;
+		chip->apsd_rerun_done = 0;
+#endif
+	} else if (event == 2) { //usb attached
+		chip->cclogic_attached = USB_ATTACHED;
+#ifdef SUPPORT_FORCE_RERUN_APSD
+		chip->apsd_rerun_enable = 1;
+#endif
+		wake_up_interruptible(&chip->cclogic_wait_queue);
+	}
+	pr_smb(PR_MISC, "setting cclogic_attached = %d\n",
+			chip->cclogic_attached);
+
+	return 0;
+}
+#endif
+
+#ifdef SUPPORT_SCREEN_ON_FCC_OP
+#define SCREEN_ON_MAX_FCC_MA			2500
+static int reset_max_fcc_ma(struct smbchg_chip *chip, int ma, bool state)
+{
+	int rc = 0;
+
+	rc = vote(chip->fcc_votable, SCREEN_ON_FCC_VOTER, state, ma);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't vote fastchg ma rc = %d\n", rc);
+		return rc;
+	}
+
+	pr_info("reset max fcc to %dmA\n", ma);
+	return 0;
+}
+
+static int fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
+{
+	int *blank;
+	struct fb_event *evdata = data;
+	struct smbchg_chip *chip = container_of(self, struct smbchg_chip, fb_notif);
+	blank = evdata->data;
+	if (evdata && evdata->data && event == FB_EVENT_BLANK && chip) {
+		blank = evdata->data;
+		if (*blank == FB_BLANK_UNBLANK) {
+			pr_err("ScreenOn\n");
+			chip->screen_on = 1;
+			reset_max_fcc_ma(chip, SCREEN_ON_MAX_FCC_MA, true);
+		} else if (*blank == FB_BLANK_POWERDOWN) {
+			pr_err("ScreenOff\n");
+			chip->screen_on = 0;
+			reset_max_fcc_ma(chip, 0, false);
+		}
+	}
+	return 0;
+}
+#endif
+
+#ifdef SUPPORT_SMBCHG_PROC_FS
+#define SMBCHG_REGS_READ_NUM		8
+#define SMBCHG_SID_OFFSET		0x20000
+
+struct smbchg_regs_setting {
+	u16	address;
+	u16	count;
+};
+enum smbchg_regs_setting_index {
+	SMBCHG_REGS_BASE = 0,
+	SMBCHG_REGS_0x1600,
+	SMBCHG_REGS_0x2400,
+	SMBCHG_REGS_MAX,
+};
+
+static int smbchg_regs_type = SMBCHG_REGS_BASE;
+
+static struct smbchg_regs_setting smbchg_regs_setting[SMBCHG_REGS_MAX] = {
+	{ 0x1000,	0x500 },
+	{ 0x1600,	0x100 },
+	{ 0x4000,	0x500 },
+};
+
+static int smbchg_read_regs(struct smbchg_chip *chip,
+			struct seq_file *p, u16 addr, int count)
+{
+	int rc, i, cnt = 1;
+	u8 val[SMBCHG_REGS_READ_NUM];
+
+	while (count > 0) {
+		rc = smbchg_read(chip, val, addr, SMBCHG_REGS_READ_NUM);
+		if (rc < 0) {
+			dev_err(chip->dev, "Couldn't read rc = %d, addr = 0x%x\n", rc, addr);
+			return 0;
+		}
+
+		if (cnt % 2)
+			seq_printf(p, "%5.5X", addr + SMBCHG_SID_OFFSET);
+		for (i = 0; i < SMBCHG_REGS_READ_NUM; i++)
+			seq_printf(p, " %2.2X", val[i]);
+		if (!(cnt % 2))
+			seq_printf(p, "\n");
+
+		count -= SMBCHG_REGS_READ_NUM;
+		addr += SMBCHG_REGS_READ_NUM;
+		cnt++;
+	}
+
+	return 0;
+}
+
+static int smbchg_regs_show(struct seq_file *p, void *v)
+{
+	struct smbchg_chip *chip = p->private;
+
+	smbchg_read_regs(chip, p,
+			smbchg_regs_setting[smbchg_regs_type].address,
+			smbchg_regs_setting[smbchg_regs_type].count);
+
+	return 0;
+}
+
+static ssize_t smbchg_regs_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *ppos)
+{
+	char c;
+	int t;
+
+	if (get_user(c, buffer))
+		return -EFAULT;
+
+	t = c - '0';
+	if ((t >= SMBCHG_REGS_BASE) && (t < SMBCHG_REGS_MAX))
+		smbchg_regs_type = t;
+	else
+		pr_err("0x%x is not valid\n", c);
+
+	return count;
+}
+
+static int smbchg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, smbchg_regs_show, PDE_DATA(file_inode(file)));
+}
+
+static const struct file_operations proc_smbchg_operations = {
+        .open           = smbchg_open,
+        .read           = seq_read,
+	.write		= smbchg_regs_write,
+        .llseek         = seq_lseek,
+        .release        = single_release,
+};
+
+static void smbchg_init_procfs(struct smbchg_chip *chip)
+{
+	proc_create_data("smbchg_regs", 0644, NULL, &proc_smbchg_operations, chip);
+}
+#endif
+
 static int smbchg_probe(struct spmi_device *spmi)
 {
 	int rc;
